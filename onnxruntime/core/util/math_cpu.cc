@@ -19,8 +19,11 @@
 #include "core/util/math.h"
 
 #include <algorithm>
+#include <iostream>
 #include <gsl/gsl>
+#include "core/common/inlined_containers_fwd.h"
 #include "core/mlas/inc/mlas.h"
+#include "core/platform/threadpool.h"
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -307,6 +310,8 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
     int64_t stride_w,
     T* data_col,
     T padding_value) {
+  std::cout << " Im2Col channels: " << channels << std::endl;
+
   const int64_t output_h = (height + pad_b + pad_t - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
   const int64_t output_w = (width + pad_l + pad_r - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
 
@@ -370,11 +375,71 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
     T* data_col,
     bool accumulate_output,
     T padding_value) {
-  int64_t kernel_size = std::accumulate(kernel_shape, kernel_shape + rank, 1LL, std::multiplies<int64_t>());
-  std::vector<int64_t> d_offset(rank, 0);
-  std::vector<int64_t> d_iter(rank, 0);
-  for (int64_t c_col = 0; c_col < channels_col; ++c_col) {
+  //int64_t kernel_size = std::accumulate(kernel_shape, kernel_shape + rank, 1LL, std::multiplies<int64_t>());
+  //InlinedVector<int64_t> d_offset(rank, 0);
+  //InlinedVector<int64_t> d_iter(rank, 0);
+  //for (int64_t c_col = 0; c_col < channels_col; ++c_col) {
+  //  // Loop over spatial axes in reverse order to compute a per-axis offset.
+  //  int64_t offset = c_col;
+  //  for (ptrdiff_t d_i = rank - 1; d_i >= 0; --d_i) {
+  //    if (d_i < rank - 1) {
+  //      offset /= kernel_shape[d_i + 1];
+  //    }
+  //    d_offset[d_i] = offset % kernel_shape[d_i];
+  //  }
+  //  do {
+  //    // Loop over spatial axes in forward order to compute the indices in the
+  //    // image and column, and whether the index lies in the padding.
+  //    int64_t index_col = c_col;
+  //    int64_t index_im = c_col / kernel_size;
+  //    bool is_padding = false;
+  //    for (ptrdiff_t d_i = 0; d_i < rank; ++d_i) {
+  //      int64_t d = d_iter[d_i];
+  //      int64_t d_im = d * stride[d_i] - pad[d_i] + d_offset[d_i] * dilation[d_i];
+  //      is_padding |= !is_a_ge_zero_and_a_lt_b(d_im, im_shape[d_i]);
+  //      index_col *= output_shape[d_i];
+  //      index_col += d;
+  //      index_im *= im_shape[d_i];
+  //      index_im += d_im;
+  //    }
+  //    if (!accumulate_output) {
+  //      if (is_padding) {
+  //        data_col[index_col] = padding_value;
+  //      } else {
+  //        data_col[index_col] = data_im[index_im];
+  //      }
+  //    } else if (!is_padding) {  // col2im
+  //      data_col[index_im] += data_im[index_col];
+  //    }
+  //  } while (NextPosition(rank, output_shape, d_iter.data()));
+  //}  // for (int c = 0; c < channels_col; ++c) {
+  (*this)(data_im, im_shape, output_shape, channels_col, kernel_shape, stride, dilation, pad, rank, data_col,
+          nullptr, accumulate_output, padding_value);
+}
+
+template <typename T>
+void Im2col<T, StorageOrder::NCHW>::operator()(
+    const T* data_im,
+    const int64_t* im_shape,
+    const int64_t* output_shape,
+    int64_t channels_col,
+    const int64_t* kernel_shape,
+    const int64_t* stride,
+    const int64_t* dilation,
+    const int64_t* pad,
+    ptrdiff_t rank,
+    T* data_col,
+    concurrency::ThreadPool* tp,
+    bool accumulate_output,
+    T padding_value) {
+  std::cout << " Im2Col channels_col: " << channels_col << std::endl;
+
+  const int64_t kernel_size = std::accumulate(kernel_shape, kernel_shape + rank, 1LL, std::multiplies<int64_t>());
+
+  auto channel_proc = [=](ptrdiff_t c_col) {
     // Loop over spatial axes in reverse order to compute a per-axis offset.
+    InlinedVector<int64_t> d_offset(rank, 0);
+    InlinedVector<int64_t> d_iter(rank, 0);
     int64_t offset = c_col;
     for (ptrdiff_t d_i = rank - 1; d_i >= 0; --d_i) {
       if (d_i < rank - 1) {
@@ -407,7 +472,9 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
         data_col[index_im] += data_im[index_col];
       }
     } while (NextPosition(rank, output_shape, d_iter.data()));
-  }  // for (int c = 0; c < channels_col; ++c) {
+  };  // for (int c = 0; c < channels_col; ++c) {
+
+  concurrency::ThreadPool::TrySimpleParallelFor(tp, channels_col, channel_proc);
 }
 
 template struct Im2col<float, StorageOrder::NCHW>;
@@ -433,7 +500,6 @@ void Im2col<T, StorageOrder::NHWC>::operator()(
     int64_t output_count,
     T* data_col,
     T padding_value) {
-
   int64_t mh = output_start / output_w;
   int64_t mw = output_start % output_w;
   for (int64_t mz = output_start; mz < output_start + output_count; mz++) {
@@ -501,9 +567,9 @@ void Im2col<T, StorageOrder::NHWC>::operator()(
     T* data_col,
     T padding_value) {
   // iterate dimensions on output image shape (without Batch and Channel)
-  std::vector<int64_t> d_output(rank, 0);
+  InlinedVector<int64_t> d_output(rank, 0);
   // inner iterate dimensions on kernel shape (without output channel and input channel)
-  std::vector<int64_t> d_kernel(rank, 0);
+  InlinedVector<int64_t> d_kernel(rank, 0);
 
   // Loop over spatial axes along the output image shape
   do {
@@ -620,9 +686,9 @@ void Im2col<T, StorageOrder::NHWC>::operator()(
 
   } else {
     // iterate dimensions on output image shape (without Batch and Channel)
-    std::vector<int64_t> d_output(rank, 0);
+    InlinedVector<int64_t> d_output(rank, 0);
     // inner iterate dimensions on kernel shape (without output channel and input channel)
-    std::vector<int64_t> d_kernel(rank, 0);
+    InlinedVector<int64_t> d_kernel(rank, 0);
 
     // Skip ahead to the starting output index.
     for (ptrdiff_t d_i = rank - 1; d_i >= 0; --d_i) {
@@ -656,11 +722,13 @@ template struct Im2col<int8_t, StorageOrder::NHWC>;
 template struct Im2col<uint8_t, StorageOrder::NHWC>;
 
 template <>
-void Col2im<float, CPUMathUtil, StorageOrder::NCHW>(const float* data_col, int64_t channels, int64_t height,
-                                                    int64_t width, int64_t kernel_h, int64_t kernel_w,
-                                                    int64_t dilation_h, int64_t dilation_w, int64_t pad_t,
-                                                    int64_t pad_l, int64_t pad_b, int64_t pad_r, int64_t stride_h,
-                                                    int64_t stride_w, float* data_im, CPUMathUtil* context) {
+void Col2imPar<float, StorageOrder::NCHW>(const float* data_col, int64_t channels, int64_t height,
+                                          int64_t width, int64_t kernel_h, int64_t kernel_w,
+                                          int64_t dilation_h, int64_t dilation_w, int64_t pad_t,
+                                          int64_t pad_l, int64_t pad_b, int64_t pad_r, int64_t stride_h,
+                                          int64_t stride_w, float* data_im, CPUMathUtil* context,
+                                          ThreadPool* tp) {
+
   const int64_t output_h =
       (height + pad_b + pad_t - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
   const int64_t output_w =
@@ -668,21 +736,22 @@ void Col2im<float, CPUMathUtil, StorageOrder::NCHW>(const float* data_col, int64
   const int64_t output_hw = output_h * output_w;
   const int64_t hw = height * width;
   const int64_t hwc = hw * channels;
+  const auto data_per_channel = kernel_h * kernel_w * output_hw;
+
+  constexpr int64_t cost_per_batch = 4864;  // Experimentally found number
+  const auto batches = (data_per_channel * channels) / cost_per_batch + 1;
+
   Set<float, CPUMathUtil>(gsl::narrow<ptrdiff_t>(hwc), 0, data_im, context);
 
   // Fast path for zero padding and no dilation
   // From Torch, modified THNN_(unfolded_acc)
   if (dilation_h == 1 && dilation_w == 1 && pad_l == 0 && pad_r == 0 && pad_t == 0 && pad_b == 0) {
-    // Src (column) data cursor
-    auto* src = data_col;
-    // End of dst (image) data
-    auto* dst_end = data_im + hwc;
-    // Dst cursor step at end of row
-    auto dst_row_step = stride_h * width - stride_w * output_w;
-    // Dst channel data
-    for (auto* dst_cb = data_im; dst_cb < dst_end; dst_cb += hw) {
-      // First dst row for current kernel row
-      auto* dst_hb = dst_cb;
+    const auto dst_row_step = stride_h * width - stride_w * output_w;
+    auto basic_channel_proc = [=](ptrdiff_t channel) {
+      // compute src start
+      const auto* src = data_col + channel * data_per_channel;
+      // Compute chunk destination
+      auto* dst_hb = data_im + hw * channel;
       for (auto kh = 0; kh < kernel_h; ++kh, dst_hb += width) {
         // First dst element for current kernel element
         auto* dst_wb = dst_hb;
@@ -705,32 +774,35 @@ void Col2im<float, CPUMathUtil, StorageOrder::NCHW>(const float* data_col, int64
           }
         }
       }
-    }
+      //}
+    };
+    ThreadPool::TryBatchParallelFor(tp, channels, basic_channel_proc, batches);
     return;
   }
 
   // Fallback
-
-  // Src (col data) cursor
-  auto* src = data_col;
-  // End of dst (image) data
-  auto* dst_end = data_im + hwc;
-  // Begin of src channel data
-  for (auto* dst = data_im; dst < dst_end; dst += hw) {
+  const int64_t h_offset_step = dilation_h * width;
+  // for (auto* dst = data_im; dst < dst_end; dst += hw) 
+  auto fallback_channel_proc = [=](ptrdiff_t channel) {
+    // compute src start for this channel
+    const auto* src = data_col + channel * data_per_channel;
+    // Compute destination for the channel
+    auto* dst = data_im + channel * hw;
     // Current kernel element starting vertical offset in dst data
     int64_t h_offset = -pad_t * width;
-    int64_t h_offset_end = h_offset + kernel_h * dilation_h * width;
-    for (; h_offset < h_offset_end; h_offset += dilation_h * width) {
+    const int64_t h_offset_end = h_offset + kernel_h * h_offset_step;
+    for (; h_offset < h_offset_end; h_offset += h_offset_step) {
       // Current kernel element starting horizontal offset in dst data
       int64_t w_offset = -pad_l;
-      int64_t w_offset_end = w_offset + kernel_w * dilation_w;
+      const int64_t w_offset_end = w_offset + kernel_w * dilation_w;
       for (; w_offset < w_offset_end; w_offset += dilation_w) {
-        // End of src channel data
-        auto* src_ce = src + output_hw;
         // Dst row offset
-        for (int64_t h = h_offset; src < src_ce; h += stride_h * width) {
+        const int64_t h_step = stride_h * width;
+        // End of src channel data
+        auto* const src_ce = src + output_hw;
+        for (int64_t h = h_offset; src < src_ce; h += h_step) {
           // End of src row data
-          auto* src_we = src + output_w;
+          auto* const src_we = src + output_w;
           if (is_a_ge_zero_and_a_lt_b(h, hw)) {
             for (int64_t w = w_offset; src < src_we; src++, w += stride_w) {
               if (is_a_ge_zero_and_a_lt_b(w, width)) {
@@ -743,7 +815,21 @@ void Col2im<float, CPUMathUtil, StorageOrder::NCHW>(const float* data_col, int64
         }
       }
     }
-  }
+  };
+  ThreadPool::TryBatchParallelFor(tp, channels, fallback_channel_proc, batches);
+}
+
+template <>
+void Col2im<float, CPUMathUtil, StorageOrder::NCHW>(const float* data_col, int64_t channels, int64_t height,
+                                                    int64_t width, int64_t kernel_h, int64_t kernel_w,
+                                                    int64_t dilation_h, int64_t dilation_w, int64_t pad_t,
+                                                    int64_t pad_l, int64_t pad_b, int64_t pad_r, int64_t stride_h,
+                                                    int64_t stride_w, float* data_im, CPUMathUtil* context) {
+  Col2imPar<float, StorageOrder::NCHW>(data_col, channels, height,
+                                       width, kernel_h, kernel_w,
+                                       dilation_h, dilation_w, pad_t,
+                                       pad_l, pad_b, pad_r, stride_h,
+                                       stride_w, data_im, context, nullptr);
 }
 
 template <>

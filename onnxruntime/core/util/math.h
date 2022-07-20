@@ -40,6 +40,7 @@ enum CBLAS_SIDE { CblasLeft = 141,
 #endif
 
 namespace onnxruntime {
+class CPUMathUtil;
 namespace concurrency {
 class ThreadPool;
 }
@@ -212,6 +213,20 @@ struct Im2col<T, StorageOrder::NCHW> {
       T* data_col,
       bool accumulate_output = false,
       T padding_value = 0);
+  void operator()(
+      const T* data_im,
+      const int64_t* input_shape,
+      const int64_t* output_shape,
+      int64_t channels_col,
+      const int64_t* kernel_shape,
+      const int64_t* stride,
+      const int64_t* dilation,
+      const int64_t* pad,
+      ptrdiff_t rank,
+      T* data_col,
+      concurrency::ThreadPool* tp,
+      bool accumulate_output = false,
+      T padding_value = 0);
 };
 
 template <typename T>
@@ -297,6 +312,27 @@ void Col2im(
     int64_t stride_w,
     T* data_im,
     Provider* provider);
+
+template <typename T, int order>
+void Col2imPar(
+    const T* data_col,
+    int64_t channels,
+    int64_t height,
+    int64_t width,
+    int64_t patch_h,
+    int64_t patch_w,
+    int64_t dilation_h,
+    int64_t dilation_w,
+    int64_t pad_t,
+    int64_t pad_l,
+    int64_t pad_b,
+    int64_t pad_r,
+    int64_t stride_h,
+    int64_t stride_w,
+    T* data_im,
+    CPUMathUtil* context,
+    concurrency::ThreadPool* tp);
+
 
 template <typename T, typename TypedCopy>
 void CopyMatrix(
