@@ -293,7 +293,7 @@ static inline bool NextPosition(int64_t N, const int64_t* shape, int64_t* dims) 
 }
 
 template <typename T>
-void Im2col<T, StorageOrder::NCHW>::operator()(
+void Im2col<T, StorageOrder::NCHW>::operator() (
     const T* data_im,
     int64_t channels,
     int64_t height,
@@ -310,7 +310,7 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
     int64_t stride_w,
     T* data_col,
     T padding_value) {
-  std::cout << " Im2Col channels: " << channels << std::endl;
+  std::cout << " Im2Col<NCHW> channels: " << channels << std::endl;
 
   const int64_t output_h = (height + pad_b + pad_t - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
   const int64_t output_w = (width + pad_l + pad_r - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
@@ -362,7 +362,7 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
 }
 
 template <typename T>
-void Im2col<T, StorageOrder::NCHW>::operator()(
+void Im2col<T, StorageOrder::NCHW>::operator() (
     const T* data_im,
     const int64_t* im_shape,
     const int64_t* output_shape,
@@ -375,50 +375,12 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
     T* data_col,
     bool accumulate_output,
     T padding_value) {
-  //int64_t kernel_size = std::accumulate(kernel_shape, kernel_shape + rank, 1LL, std::multiplies<int64_t>());
-  //InlinedVector<int64_t> d_offset(rank, 0);
-  //InlinedVector<int64_t> d_iter(rank, 0);
-  //for (int64_t c_col = 0; c_col < channels_col; ++c_col) {
-  //  // Loop over spatial axes in reverse order to compute a per-axis offset.
-  //  int64_t offset = c_col;
-  //  for (ptrdiff_t d_i = rank - 1; d_i >= 0; --d_i) {
-  //    if (d_i < rank - 1) {
-  //      offset /= kernel_shape[d_i + 1];
-  //    }
-  //    d_offset[d_i] = offset % kernel_shape[d_i];
-  //  }
-  //  do {
-  //    // Loop over spatial axes in forward order to compute the indices in the
-  //    // image and column, and whether the index lies in the padding.
-  //    int64_t index_col = c_col;
-  //    int64_t index_im = c_col / kernel_size;
-  //    bool is_padding = false;
-  //    for (ptrdiff_t d_i = 0; d_i < rank; ++d_i) {
-  //      int64_t d = d_iter[d_i];
-  //      int64_t d_im = d * stride[d_i] - pad[d_i] + d_offset[d_i] * dilation[d_i];
-  //      is_padding |= !is_a_ge_zero_and_a_lt_b(d_im, im_shape[d_i]);
-  //      index_col *= output_shape[d_i];
-  //      index_col += d;
-  //      index_im *= im_shape[d_i];
-  //      index_im += d_im;
-  //    }
-  //    if (!accumulate_output) {
-  //      if (is_padding) {
-  //        data_col[index_col] = padding_value;
-  //      } else {
-  //        data_col[index_col] = data_im[index_im];
-  //      }
-  //    } else if (!is_padding) {  // col2im
-  //      data_col[index_im] += data_im[index_col];
-  //    }
-  //  } while (NextPosition(rank, output_shape, d_iter.data()));
-  //}  // for (int c = 0; c < channels_col; ++c) {
   (*this)(data_im, im_shape, output_shape, channels_col, kernel_shape, stride, dilation, pad, rank, data_col,
           nullptr, accumulate_output, padding_value);
 }
 
 template <typename T>
-void Im2col<T, StorageOrder::NCHW>::operator()(
+void Im2col<T, StorageOrder::NCHW>::operator() (
     const T* data_im,
     const int64_t* im_shape,
     const int64_t* output_shape,
@@ -432,9 +394,13 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
     concurrency::ThreadPool* tp,
     bool accumulate_output,
     T padding_value) {
-  std::cout << " Im2Col channels_col: " << channels_col << std::endl;
 
   const int64_t kernel_size = std::accumulate(kernel_shape, kernel_shape + rank, 1LL, std::multiplies<int64_t>());
+  const auto output_size = std::accumulate(output_shape, output_shape + rank, 1LL, std::multiplies<int64_t>());
+
+  constexpr int64_t cost_per_batch = 4864;
+  const auto total_cost = output_size * (rank + 1) * channels_col;
+  const auto batches = total_cost / cost_per_batch + 1; 
 
   auto channel_proc = [=](ptrdiff_t c_col) {
     // Loop over spatial axes in reverse order to compute a per-axis offset.
@@ -472,9 +438,9 @@ void Im2col<T, StorageOrder::NCHW>::operator()(
         data_col[index_im] += data_im[index_col];
       }
     } while (NextPosition(rank, output_shape, d_iter.data()));
-  };  // for (int c = 0; c < channels_col; ++c) {
+  };
 
-  concurrency::ThreadPool::TrySimpleParallelFor(tp, channels_col, channel_proc);
+  ThreadPool::TryBatchParallelFor(tp, channels_col, channel_proc, batches);
 }
 
 template struct Im2col<float, StorageOrder::NCHW>;

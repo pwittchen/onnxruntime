@@ -146,6 +146,7 @@ Status ConvInteger::Compute(OpKernelContext* context) const {
               pads.data(),
               static_cast<int>(kernel_rank),
               col_buffer_data,
+              thread_pool,
               false,
               input_offset);
         }

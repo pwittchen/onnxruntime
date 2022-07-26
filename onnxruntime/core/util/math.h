@@ -183,7 +183,7 @@ struct Im2col {
 
 template <typename T>
 struct Im2col<T, StorageOrder::NCHW> {
-  void operator()(
+  void operator() (
       const T* data_im,
       int64_t channels,
       int64_t height,
@@ -200,7 +200,7 @@ struct Im2col<T, StorageOrder::NCHW> {
       int64_t stride_w,
       T* data_col,
       T padding_value = 0);
-  void operator()(
+  void operator() (
       const T* data_im,
       const int64_t* input_shape,
       const int64_t* output_shape,
@@ -213,7 +213,7 @@ struct Im2col<T, StorageOrder::NCHW> {
       T* data_col,
       bool accumulate_output = false,
       T padding_value = 0);
-  void operator()(
+  void operator() (
       const T* data_im,
       const int64_t* input_shape,
       const int64_t* output_shape,

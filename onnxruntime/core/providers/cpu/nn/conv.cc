@@ -121,7 +121,8 @@ Status Conv<T>::Compute(OpKernelContext* context) const {
               dilations.data(),
               pads.data(),
               static_cast<int>(kernel_shape.size()),
-              col_buffer_data);
+              col_buffer_data,
+              thread_pool);
         }
       }
 
@@ -269,7 +270,8 @@ Status Conv<float>::Compute(OpKernelContext* context) const {
             dilations.data(),
             pads.data(),
             static_cast<int>(kernel_shape.size()),
-            col_buffer_data);
+            col_buffer_data,
+            thread_pool);
 
         math::Gemm<float>(
             CblasNoTrans,
